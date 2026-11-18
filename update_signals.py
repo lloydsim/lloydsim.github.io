@@ -1,5 +1,6 @@
 """Collect official incidents and discover outage reporting; never infer health from failures."""
 import concurrent.futures
+import directory as catalog
 import hashlib
 import json
 import re
@@ -12,8 +13,13 @@ from pathlib import Path
 
 DIRECTORY = json.loads(Path(__file__).with_name("companies.json").read_text()) if Path(__file__).with_name("companies.json").exists() else []
 
+MATCHERS = []
+def rebuild_matchers():
+    global MATCHERS
+    MATCHERS = [(c['id'], re.compile(r'(?<![a-z0-9])(?:' + '|'.join(re.escape(a) for a in c['aliases'] if len(a)>2) + r')(?![a-z0-9])', re.I)) for c in DIRECTORY if any(len(a)>2 for a in c['aliases'])]
+
 def company_ids(title):
-    return [c["id"] for c in DIRECTORY if any(re.search(r"(?<![a-z0-9])" + re.escape(a) + r"(?![a-z0-9])", title, re.I) for a in c["aliases"])]
+    return [ident for ident, pattern in MATCHERS if pattern.search(title)]
 
 NOW = datetime.now(timezone.utc)
 CUTOFF = NOW - timedelta(hours=48)
@@ -32,6 +38,7 @@ GOOGLE = [
 NEWS_QUERIES = [
     ('Company outages', '(outage OR "service disruption") (company OR app OR service) when:2d'),
     ('Banking & payments', '(bank OR banking OR payments) (outage OR "technical issues") when:2d'),
+    ('Government services', '(FAA OR IRS OR SSA OR USPS OR NSA OR TSA OR FEMA OR NASA OR government) (outage OR \"system disruption\" OR \"website down\") when:2d'),
     ('Travel & connectivity', '(airline OR telecom OR internet OR Workday) outage when:2d'),
     ('Everyday apps', '(Apple OR Microsoft OR Netflix OR Spotify OR Amazon OR PayPal OR Instagram OR WhatsApp OR TikTok) (outage OR \"service disruption\") when:2d'),
 ]
@@ -107,7 +114,7 @@ def news(task):
             headline = ' '.join(words[:14]) + ('…' if len(words) > 14 else '')
             url = safe_url(item.findtext('link'), endpoint)
             records.append({'id': 'news:' + hashlib.sha256(url.encode()).hexdigest()[:18],
-                'name': publisher, 'companies': company_ids(title), 'headline': headline, 'state': 'unknown', 'status_label': 'News report · unverified',
+                'name': publisher, 'companies': company_ids(title), 'full_headline': title, 'headline': headline, 'state': 'unknown', 'status_label': 'News report · unverified',
                 'sector': name, 'kind': 'news', 'published_at': changed.isoformat(),
                 'publisher': publisher, 'url': url,
                 'description': 'Discovered through Google News. This is a linked article, not an independently confirmed active outage. Multiple articles may describe the same event; geographic scope varies.'})
@@ -116,6 +123,11 @@ def news(task):
         return source(name + ' · Google News', endpoint, 'news', failed=True), []
 
 def main():
+    global DIRECTORY
+    directory = {c['id']: c for c in DIRECTORY}
+    directory_notes = catalog.refresh(directory)
+    DIRECTORY = list(directory.values())
+    rebuild_matchers()
     tasks = [('statuspage', n, base + '/api/v2/incidents.json', base) for n, base in STATUSPAGES]
     tasks += [('google', n, endpoint, home) for n, endpoint, home in GOOGLE]
     with concurrent.futures.ThreadPoolExecutor(max_workers=8) as pool:
@@ -133,6 +145,18 @@ def main():
             'coverage': {'configured': len(sources), 'available': sum(s['available'] for s in sources)},
             'trigger': __import__('os').environ.get('GITHUB_EVENT_NAME', 'local'),
             'scope': 'Global provider feeds and US-English news discovery; not exhaustive. Articles are not unique outages.'}
+    added = catalog.discover(directory, records)
+    # Enrich organizations currently in reporting first, then a bounded background queue.
+    relevant = {ident for r in records for ident in r.get('companies', [])}
+    pending = sorted([c for c in directory.values() if not c.get('metadata_checked_at')], key=lambda c:(c['id'] not in relevant, c.get('origin') not in ('Public agency', 'Curated profile'), c.get('metadata_attempted_at',''), c['name']))[:16]
+    with concurrent.futures.ThreadPoolExecutor(max_workers=3) as pool:
+        list(pool.map(catalog.enrich_one, pending))
+    DIRECTORY = list(directory.values())
+    rebuild_matchers()
+    for record in records:
+        record['companies'] = company_ids(record.get('full_headline', record['name'] if record['kind'] == 'official' else record['headline']))
+    catalog.save(directory)
+    data['directory'] = {'count': len(directory), 'mapped': sum(bool(c.get('coordinates')) for c in DIRECTORY), 'newly_discovered': len(added), 'notes': directory_notes}
     dest = Path(__file__).with_name('signals.json')
     dest.with_suffix('.tmp').write_text(json.dumps(data, indent=2) + '\n')
     dest.with_suffix('.tmp').replace(dest)

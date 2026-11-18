@@ -1,0 +1,17 @@
+name: Automatic timer check
+on:
+  schedule:
+    - cron: '*/5 * * * *'
+  workflow_dispatch:
+permissions: {}
+jobs:
+  timer:
+    runs-on: ubuntu-latest
+    timeout-minutes: 1
+    steps:
+      - name: Record the trigger
+        env:
+          TRIGGER: ${{ github.event_name }}
+        run: |
+          date -u
+          echo "Trigger: $TRIGGER"

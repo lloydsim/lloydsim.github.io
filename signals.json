@@ -1,0 +1,35 @@
+{
+  "checked_at": "2026-11-17T18:43:28.604326+00:00",
+  "sources": [
+    {
+      "name": "Google Workspace",
+      "summary": "Feed unavailable / unverified",
+      "detail": "Unable to verify automated data; check the official dashboard directly.",
+      "url": "https://www.google.com/appsstatus/dashboard/"
+    },
+    {
+      "name": "Google Search",
+      "summary": "Feed unavailable / unverified",
+      "detail": "Unable to verify automated data; check the official dashboard directly.",
+      "url": "https://status.search.google.com/"
+    },
+    {
+      "name": "Apple System Status",
+      "summary": "Open official dashboard",
+      "detail": "Automated extraction not configured; no live claim is made.",
+      "url": "https://www.apple.com/support/systemstatus/"
+    },
+    {
+      "name": "Microsoft 365",
+      "summary": "Open official dashboard",
+      "detail": "Some service-health details require administrator sign-in.",
+      "url": "https://status.cloud.microsoft/"
+    },
+    {
+      "name": "FAA",
+      "summary": "Open official FAA source",
+      "detail": "Investigations and operations are not represented by this automated feed.",
+      "url": "https://www.faa.gov/"
+    }
+  ]
+}

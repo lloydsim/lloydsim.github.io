@@ -1,0 +1,180 @@
+[
+  {
+    "id": "apple",
+    "name": "Apple",
+    "category": "Apps & devices",
+    "aliases": [
+      "apple",
+      "icloud",
+      "app store",
+      "imessage"
+    ],
+    "coordinates": [
+      37.323,
+      -122.032
+    ],
+    "city": "Cupertino, California",
+    "hq_source": "https://www.apple.com/contact/",
+    "official_url": "https://www.apple.com/support/systemstatus/"
+  },
+  {
+    "id": "microsoft",
+    "name": "Microsoft",
+    "category": "Email & work",
+    "aliases": [
+      "microsoft",
+      "outlook",
+      "office 365"
+    ],
+    "coordinates": [
+      47.674,
+      -122.122
+    ],
+    "city": "Redmond, Washington",
+    "hq_source": "https://www.microsoft.com/en-us/about/office-locations",
+    "official_url": "https://status.cloud.microsoft/"
+  },
+  {
+    "id": "google",
+    "name": "Google",
+    "category": "Search & email",
+    "aliases": [
+      "google",
+      "gmail",
+      "youtube"
+    ],
+    "coordinates": [
+      37.386,
+      -122.084
+    ],
+    "city": "Mountain View, California",
+    "hq_source": "https://about.google/company-info/our-story/",
+    "official_url": "https://www.google.com/appsstatus/dashboard/"
+  },
+  {
+    "id": "chase",
+    "name": "Chase",
+    "category": "Banking",
+    "aliases": [
+      "chase",
+      "jpmorgan"
+    ],
+    "coordinates": [
+      40.755,
+      -73.975
+    ],
+    "city": "New York, New York",
+    "hq_source": "https://www.jpmorganchase.com/newsroom/press-releases/2025/grand-opening-270-park",
+    "official_url": "https://www.chase.com/"
+  },
+  {
+    "id": "bofa",
+    "name": "Bank of America",
+    "category": "Banking",
+    "aliases": [
+      "bank of america",
+      "bofa"
+    ],
+    "coordinates": [
+      35.227,
+      -80.843
+    ],
+    "city": "Charlotte, North Carolina",
+    "hq_source": "https://about.bankofamerica.com/content/dam/about/report-center/msas/modern-slavery-act-statement.pdf",
+    "official_url": "https://www.bankofamerica.com/"
+  },
+  {
+    "id": "united",
+    "name": "United Airlines",
+    "category": "Travel",
+    "aliases": [
+      "united airlines",
+      "united airline"
+    ],
+    "coordinates": [
+      41.878,
+      -87.636
+    ],
+    "city": "Chicago, Illinois",
+    "hq_source": "https://ir.united.com/static-files/3325136f-9671-4f16-9ffa-bf8ba8449a88",
+    "official_url": "https://www.united.com/"
+  },
+  {
+    "id": "workday",
+    "name": "Workday",
+    "category": "Work & payroll",
+    "aliases": [
+      "workday"
+    ],
+    "coordinates": [
+      37.662,
+      -121.875
+    ],
+    "city": "Pleasanton, California",
+    "hq_source": "https://www.workday.com/en-us/company/about-workday/contact-us.html",
+    "official_url": "https://www.workday.com/"
+  },
+  {
+    "id": "amazon",
+    "name": "Amazon",
+    "category": "Shopping & streaming",
+    "aliases": [
+      "amazon",
+      "prime video",
+      "aws"
+    ],
+    "coordinates": [
+      47.606,
+      -122.332
+    ],
+    "city": "Seattle, Washington \u00b7 HQ1",
+    "hq_source": "https://www.aboutamazon.com/news/amazon-offices/amazon-headquarters-tour-seattle",
+    "official_url": "https://www.amazon.com/"
+  },
+  {
+    "id": "netflix",
+    "name": "Netflix",
+    "category": "Streaming",
+    "aliases": [
+      "netflix"
+    ],
+    "coordinates": [
+      37.235,
+      -121.962
+    ],
+    "city": "Los Gatos, California",
+    "hq_source": "https://ir.netflix.net/files/doc_financials/2021/q4/da27d24b-9358-4b5c-a424-6da061d91836.pdf",
+    "official_url": "https://help.netflix.com/en/is-netflix-down"
+  },
+  {
+    "id": "spotify",
+    "name": "Spotify",
+    "category": "Music",
+    "aliases": [
+      "spotify"
+    ],
+    "coordinates": [
+      59.329,
+      18.069
+    ],
+    "city": "Stockholm, Sweden",
+    "hq_source": "https://newsroom.spotify.com/2026-03-25/spotify-naver-korea-partnership-update/",
+    "official_url": "https://community.spotify.com/"
+  },
+  {
+    "id": "paypal",
+    "name": "PayPal",
+    "category": "Payments",
+    "aliases": [
+      "paypal",
+      "venmo"
+    ],
+    "coordinates": [
+      37.338,
+      -121.886
+    ],
+    "city": "San Jose, California",
+    "hq_source": "https://www.paypal.com/us/legalhub/paypal/xdeveloper-full",
+    "official_url": "https://www.paypal-status.com/"
+  }
+]

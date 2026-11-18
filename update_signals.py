@@ -10,6 +10,11 @@ from datetime import datetime, timedelta, timezone
 from email.utils import parsedate_to_datetime
 from pathlib import Path
 
+DIRECTORY = json.loads(Path(__file__).with_name("companies.json").read_text()) if Path(__file__).with_name("companies.json").exists() else []
+
+def company_ids(title):
+    return [c["id"] for c in DIRECTORY if any(re.search(r"(?<![a-z0-9])" + re.escape(a) + r"(?![a-z0-9])", title, re.I) for a in c["aliases"])]
+
 NOW = datetime.now(timezone.utc)
 CUTOFF = NOW - timedelta(hours=48)
 STATUSPAGES = [
@@ -28,6 +33,7 @@ NEWS_QUERIES = [
     ('Company outages', '(outage OR "service disruption") (company OR app OR service) when:2d'),
     ('Banking & payments', '(bank OR banking OR payments) (outage OR "technical issues") when:2d'),
     ('Travel & connectivity', '(airline OR telecom OR internet OR Workday) outage when:2d'),
+    ('Everyday apps', '(Apple OR Microsoft OR Netflix OR Spotify OR Amazon OR PayPal OR Instagram OR WhatsApp OR TikTok) (outage OR \"service disruption\") when:2d'),
 ]
 
 def fetch(url, xml=False):
@@ -70,7 +76,7 @@ def official(task):
             headline = ' '.join(str(headline).split()[:16])[:160]
             url = safe_url(item.get('shortlink') or item.get('uri'), home)
             records.append({'id': name + ':' + str(item.get('id', hashlib.sha256(headline.encode()).hexdigest()[:14])),
-                'name': name, 'headline': headline, 'state': 'resolved' if resolved else 'reported',
+                'name': name, 'companies': company_ids(name), 'headline': headline, 'state': 'resolved' if resolved else 'reported',
                 'status_label': 'Resolved · official' if resolved else 'Open · official',
                 'sector': 'Official status', 'kind': 'official', 'published_at': changed.isoformat(),
                 'publisher': name + ' status', 'url': url,
@@ -95,11 +101,13 @@ def news(task):
             if not re.search(r'outage|disruption|technical (?:issue|problem)|goes down|went down', title, re.I): continue
             publisher = item.findtext('source', 'News publisher')
             title = title.rsplit(' - ' + publisher, 1)[0]
+            if publisher.lower() in ('facebook', 'linkedin', 'youtube', 'instagram', 'tiktok'): continue
+            if re.search(r'how to|how outages|what you should|ways to protect|prepare for|stock alert|weigh on shares|shares fall',title,re.I): continue
             words = title.split()
             headline = ' '.join(words[:14]) + ('…' if len(words) > 14 else '')
             url = safe_url(item.findtext('link'), endpoint)
             records.append({'id': 'news:' + hashlib.sha256(url.encode()).hexdigest()[:18],
-                'name': publisher, 'headline': headline, 'state': 'unknown', 'status_label': 'News report · unverified',
+                'name': publisher, 'companies': company_ids(title), 'headline': headline, 'state': 'unknown', 'status_label': 'News report · unverified',
                 'sector': name, 'kind': 'news', 'published_at': changed.isoformat(),
                 'publisher': publisher, 'url': url,
                 'description': 'Discovered through Google News. This is a linked article, not an independently confirmed active outage. Multiple articles may describe the same event; geographic scope varies.'})
@@ -116,9 +124,14 @@ def main():
     for src, records in results:
         sources.append(src)
         for record in records: dedup[record['id']] = record
-    records = sorted(dedup.values(), key=lambda x: x['published_at'], reverse=True)[:150]
+    official_records = [x for x in dedup.values() if x['kind'] == 'official']
+    news_records = sorted([x for x in dedup.values() if x['kind'] == 'news'], key=lambda x:x['published_at'], reverse=True)[:150]
+    records = sorted(official_records + news_records, key=lambda x:x['published_at'], reverse=True)
+    if not any(s['available'] for s in sources):
+        raise RuntimeError('All sources unavailable; preserve the last deployment')
     data = {'checked_at': NOW.isoformat(), 'window_hours': 48, 'sources': sources, 'incidents': records,
             'coverage': {'configured': len(sources), 'available': sum(s['available'] for s in sources)},
+            'trigger': __import__('os').environ.get('GITHUB_EVENT_NAME', 'local'),
             'scope': 'Global provider feeds and US-English news discovery; not exhaustive. Articles are not unique outages.'}
     dest = Path(__file__).with_name('signals.json')
     dest.with_suffix('.tmp').write_text(json.dumps(data, indent=2) + '\n')

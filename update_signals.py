@@ -1,51 +1,128 @@
-"""Produce conservative, sourced status signals. Never infer outages from failed fetches."""
+"""Collect official incidents and discover outage reporting; never infer health from failures."""
+import concurrent.futures
+import hashlib
 import json
+import re
+import urllib.parse
 import urllib.request
-import urllib.error
 import xml.etree.ElementTree as ET
-from datetime import datetime, timezone, timedelta
+from datetime import datetime, timedelta, timezone
+from email.utils import parsedate_to_datetime
 from pathlib import Path
 
-SOURCES = [
+NOW = datetime.now(timezone.utc)
+CUTOFF = NOW - timedelta(hours=48)
+STATUSPAGES = [
+    ('GitHub', 'https://www.githubstatus.com'),
+    ('Cloudflare', 'https://www.cloudflarestatus.com'),
+    ('Discord', 'https://discordstatus.com'),
+    ('Zoom', 'https://status.zoom.us'),
+    ('Twilio', 'https://status.twilio.com'),
+]
+GOOGLE = [
     ('Google Workspace', 'https://www.google.com/appsstatus/dashboard/incidents.json', 'https://www.google.com/appsstatus/dashboard/'),
     ('Google Search', 'https://status.search.google.com/incidents.json', 'https://status.search.google.com/'),
+    ('Google Cloud', 'https://status.cloud.google.com/incidents.json', 'https://status.cloud.google.com/'),
+]
+NEWS_QUERIES = [
+    ('Company outages', '(outage OR "service disruption") (company OR app OR service) when:2d'),
+    ('Banking & payments', '(bank OR banking OR payments) (outage OR "technical issues") when:2d'),
+    ('Travel & connectivity', '(airline OR telecom OR internet OR Workday) outage when:2d'),
 ]
 
-def fetch_json(url):
-    req=urllib.request.Request(url, headers={'User-Agent':'OutageWatch/1.0 (personal public status tracker)','Accept':'application/json'})
-    with urllib.request.urlopen(req, timeout=16) as response:
-        return json.loads(response.read(1_000_000).decode('utf-8'))
+def fetch(url, xml=False):
+    req = urllib.request.Request(url, headers={'User-Agent': 'OutageWatch/2.0 public status dashboard', 'Accept': 'application/rss+xml, application/json, application/xml'})
+    with urllib.request.urlopen(req, timeout=18) as response:
+        raw = response.read(3_000_001)
+    if len(raw) > 3_000_000:
+        raise ValueError('Oversized response')
+    return ET.fromstring(raw) if xml else json.loads(raw)
 
-def make_record(name,endpoint,official):
+def date(value):
     try:
-        raw=fetch_json(endpoint)
-        if not isinstance(raw,list):
-            raise ValueError('Unexpected status format')
-        # These incident feeds contain history. Show only items with a recent update,
-        # avoiding any assumption that a historical incident is still open.
-        cutoff=datetime.now(timezone.utc)-timedelta(days=2)
-        recent=[]
-        for incident in raw:
-            if not isinstance(incident,dict): continue
-            stamp=incident.get('modified') or incident.get('begin') or incident.get('created') or ''
-            try:
-                at=datetime.fromisoformat(stamp.replace('Z','+00:00'))
-                if at.tzinfo is None: at=at.replace(tzinfo=timezone.utc)
-            except (ValueError,TypeError): continue
-            if at>=cutoff: recent.append(incident)
-        recent.sort(key=lambda x:x.get('modified') or x.get('begin') or '',reverse=True)
-        if recent:
-            item=recent[0]
-            name_item=item.get('service_name') or item.get('external_desc') or item.get('id') or 'Recent incident'
-            return {'name':name,'summary':f'{len(recent)} incident update(s) in last 48 hours','detail':str(name_item)[:160], 'url':official}
-        return {'name':name,'summary':'No recent incidents listed in feed','detail':'Only covers the published feed. Does not guarantee every service is operational.','url':official}
-    except Exception:
-        return {'name':name,'summary':'Feed unavailable / unverified','detail':'Unable to verify automated data; check the official dashboard directly.','url':official}
+        d = datetime.fromisoformat(str(value).replace('Z', '+00:00'))
+        return d.replace(tzinfo=timezone.utc) if d.tzinfo is None else d
+    except (ValueError, TypeError):
+        return None
 
-sources=[make_record(*source) for source in SOURCES]
-sources.extend([
- {'name':'Apple System Status','summary':'Open official dashboard','detail':'Automated extraction not configured; no live claim is made.','url':'https://www.apple.com/support/systemstatus/'},
- {'name':'Microsoft 365','summary':'Open official dashboard','detail':'Some service-health details require administrator sign-in.','url':'https://status.cloud.microsoft/'},
- {'name':'FAA','summary':'Open official FAA source','detail':'Investigations and operations are not represented by this automated feed.','url':'https://www.faa.gov/'},
-])
-Path(__file__).with_name('signals.json').write_text(json.dumps({'checked_at':datetime.now(timezone.utc).isoformat(),'sources':sources},indent=2)+'\n')
+def safe_url(value, fallback):
+    return value if isinstance(value, str) and urllib.parse.urlparse(value).scheme == 'https' else fallback
+
+def source(name, url, kind, records=None, failed=False):
+    return {'name': name, 'url': url, 'kind': kind, 'available': not failed,
+            'summary': 'Unavailable / unverified' if failed else f'{len(records or [])} recent report(s)',
+            'detail': 'Check the source directly.' if failed else 'Recent feed updates; coverage is limited to this source.'}
+
+def official(task):
+    kind, name, endpoint, home = task
+    try:
+        raw = fetch(endpoint)
+        items = raw.get('incidents') if kind == 'statuspage' and isinstance(raw, dict) else raw
+        if not isinstance(items, list):
+            raise ValueError('Unexpected feed format')
+        records = []
+        for item in items:
+            if not isinstance(item, dict): continue
+            changed = date(item.get('updated_at') or item.get('modified') or item.get('begin'))
+            if not changed or changed < CUTOFF or changed > NOW + timedelta(minutes=10): continue
+            resolved = bool(item.get('end')) or item.get('status') in ('resolved', 'postmortem')
+            headline = item.get('name') or item.get('external_desc') or item.get('service_name') or 'Service incident'
+            headline = ' '.join(str(headline).split()[:16])[:160]
+            url = safe_url(item.get('shortlink') or item.get('uri'), home)
+            records.append({'id': name + ':' + str(item.get('id', hashlib.sha256(headline.encode()).hexdigest()[:14])),
+                'name': name, 'headline': headline, 'state': 'resolved' if resolved else 'reported',
+                'status_label': 'Resolved · official' if resolved else 'Open · official',
+                'sector': 'Official status', 'kind': 'official', 'published_at': changed.isoformat(),
+                'publisher': name + ' status', 'url': url,
+                'description': 'Provider-published incident. Timestamp is the latest incident update. Coverage may include regions outside the U.S.'})
+        return source(name, home, 'official', records), records
+    except Exception:
+        return source(name, home, 'official', failed=True), []
+
+def news(task):
+    name, query = task
+    endpoint = 'https://news.google.com/rss/search?' + urllib.parse.urlencode({'q': query, 'hl': 'en-US', 'gl': 'US', 'ceid': 'US:en'})
+    try:
+        tree = fetch(endpoint, xml=True)
+        if tree.tag != 'rss' or tree.find('channel') is None: raise ValueError('Unexpected news format')
+        records = []
+        for item in tree.findall('./channel/item')[:50]:
+            try: changed = parsedate_to_datetime(item.findtext('pubDate', ''))
+            except (ValueError, TypeError): continue
+            if changed.tzinfo is None: changed = changed.replace(tzinfo=timezone.utc)
+            if changed < CUTOFF or changed > NOW + timedelta(minutes=10): continue
+            title = item.findtext('title', '')
+            if not re.search(r'outage|disruption|technical (?:issue|problem)|goes down|went down', title, re.I): continue
+            publisher = item.findtext('source', 'News publisher')
+            title = title.rsplit(' - ' + publisher, 1)[0]
+            words = title.split()
+            headline = ' '.join(words[:14]) + ('…' if len(words) > 14 else '')
+            url = safe_url(item.findtext('link'), endpoint)
+            records.append({'id': 'news:' + hashlib.sha256(url.encode()).hexdigest()[:18],
+                'name': publisher, 'headline': headline, 'state': 'unknown', 'status_label': 'News report · unverified',
+                'sector': name, 'kind': 'news', 'published_at': changed.isoformat(),
+                'publisher': publisher, 'url': url,
+                'description': 'Discovered through Google News. This is a linked article, not an independently confirmed active outage. Multiple articles may describe the same event; geographic scope varies.'})
+        return source(name + ' · Google News', endpoint, 'news', records), records
+    except Exception:
+        return source(name + ' · Google News', endpoint, 'news', failed=True), []
+
+def main():
+    tasks = [('statuspage', n, base + '/api/v2/incidents.json', base) for n, base in STATUSPAGES]
+    tasks += [('google', n, endpoint, home) for n, endpoint, home in GOOGLE]
+    with concurrent.futures.ThreadPoolExecutor(max_workers=8) as pool:
+        results = list(pool.map(official, tasks)) + list(pool.map(news, NEWS_QUERIES))
+    sources, dedup = [], {}
+    for src, records in results:
+        sources.append(src)
+        for record in records: dedup[record['id']] = record
+    records = sorted(dedup.values(), key=lambda x: x['published_at'], reverse=True)[:150]
+    data = {'checked_at': NOW.isoformat(), 'window_hours': 48, 'sources': sources, 'incidents': records,
+            'coverage': {'configured': len(sources), 'available': sum(s['available'] for s in sources)},
+            'scope': 'Global provider feeds and US-English news discovery; not exhaustive. Articles are not unique outages.'}
+    dest = Path(__file__).with_name('signals.json')
+    dest.with_suffix('.tmp').write_text(json.dumps(data, indent=2) + '\n')
+    dest.with_suffix('.tmp').replace(dest)
+    print(f"Checked {len(sources)} sources; {data['coverage']['available']} available; {len(records)} recent records")
+
+if __name__ == '__main__': main()

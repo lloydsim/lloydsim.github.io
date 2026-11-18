@@ -4,35 +4,36 @@ on:
     branches: [master]
   workflow_dispatch:
   schedule:
-    - cron: '7,37 * * * *'
+    - cron: '28,58 * * * *'
 permissions:
   contents: read
   pages: write
   id-token: write
 concurrency:
   group: pages
-  cancel-in-progress: true
+  cancel-in-progress: false
 jobs:
   deploy:
     runs-on: ubuntu-latest
+    timeout-minutes: 10
     environment:
       name: github-pages
       url: ${{ steps.deployment.outputs.page_url }}
     steps:
-      - uses: actions/checkout@v4
-      - uses: actions/setup-python@v5
+      - uses: actions/checkout@v6
+      - uses: actions/setup-python@v6
         with:
           python-version: '3.12'
       - name: Check official public feeds
         run: python update_signals.py
       - name: Prepare site files
-        run: mkdir _site && cp index.html signals.json _site/
+        run: mkdir _site && cp index.html signals.json _site/ && if [ -f companies.json ]; then cp companies.json _site/; fi
       - name: Configure Pages
-        uses: actions/configure-pages@v5
+        uses: actions/configure-pages@v6
       - name: Upload Pages artifact
-        uses: actions/upload-pages-artifact@v4
+        uses: actions/upload-pages-artifact@v5
         with:
           path: _site
       - name: Deploy to GitHub Pages
         id: deployment
-        uses: actions/deploy-pages@v4
+        uses: actions/deploy-pages@v5

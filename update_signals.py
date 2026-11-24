@@ -13,13 +13,13 @@ from pathlib import Path
 
 DIRECTORY = json.loads(Path(__file__).with_name("companies.json").read_text()) if Path(__file__).with_name("companies.json").exists() else []
 
-MATCHERS = []
+MATCHERS = lambda title, kind='news': []
 def rebuild_matchers():
     global MATCHERS
-    MATCHERS = [(c['id'], re.compile(r'(?<![a-z0-9])(?:' + '|'.join(re.escape(a) for a in c['aliases'] if len(a)>2) + r')(?![a-z0-9])', re.I)) for c in DIRECTORY if any(len(a)>2 for a in c['aliases'])]
+    MATCHERS = catalog.make_matcher(DIRECTORY)
 
-def company_ids(title):
-    return [ident for ident, pattern in MATCHERS if pattern.search(title)]
+def company_ids(title, kind='news'):
+    return MATCHERS(title, kind)
 
 NOW = datetime.now(timezone.utc)
 CUTOFF = NOW - timedelta(hours=48)
@@ -83,7 +83,7 @@ def official(task):
             headline = ' '.join(str(headline).split()[:16])[:160]
             url = safe_url(item.get('shortlink') or item.get('uri'), home)
             records.append({'id': name + ':' + str(item.get('id', hashlib.sha256(headline.encode()).hexdigest()[:14])),
-                'name': name, 'companies': company_ids(name), 'headline': headline, 'state': 'resolved' if resolved else 'reported',
+                'name': name, 'companies': company_ids(name, 'official'), 'headline': headline, 'state': 'resolved' if resolved else 'reported',
                 'status_label': 'Resolved · official' if resolved else 'Open · official',
                 'sector': 'Official status', 'kind': 'official', 'published_at': changed.isoformat(),
                 'publisher': name + ' status', 'url': url,
@@ -154,7 +154,7 @@ def main():
     DIRECTORY = list(directory.values())
     rebuild_matchers()
     for record in records:
-        record['companies'] = company_ids(record.get('full_headline', record['name'] if record['kind'] == 'official' else record['headline']))
+        record['companies'] = company_ids(record.get('full_headline', record['name'] if record['kind'] == 'official' else record['headline']), record['kind'])
     catalog.save(directory)
     data['directory'] = {'count': len(directory), 'mapped': sum(bool(c.get('coordinates')) for c in DIRECTORY), 'newly_discovered': len(added), 'notes': directory_notes}
     dest = Path(__file__).with_name('signals.json')

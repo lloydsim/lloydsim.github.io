@@ -25,3 +25,5 @@ The page checks the independent feed every five minutes and falls back to the Gi
 - Official provider feeds and Google News RSS sources are linked inside the dashboard.
 
 Run locally with Python 3.12+: `python update_signals.py`, then serve this directory with a static web server. `directory.py` must remain next to `update_signals.py`. Collection uses the Python standard library only. No credentials belong in these files.
+
+Discovery identity policy v2: entity-policy.json must accompany directory.py. Generic headline words cannot become company profiles. New profiles require exact identity, organization type, current status, a non-archive official website and affected-organization headline context. Prior unaudited automatic profiles are removed.

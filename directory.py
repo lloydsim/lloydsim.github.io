@@ -99,6 +99,7 @@ def refresh(directory):
     for c in directory.values():
         if c['name'].lower() == 'popular': c['aliases'] = ['Popular Inc', 'Popular Bank', 'Banco Popular']
         if c['name'].lower() in ('twilio', 'github', 'cloudflare'): c['technical'] = True
+    sanitize_directory(directory)
     return notes
 
 
@@ -110,30 +111,6 @@ def wikidata(qid):
     return get('https://www.wikidata.org/wiki/Special:EntityData/' + qid + '.json')['entities'][qid]
 
 
-def resolve(term):
-    result = get('https://www.wikidata.org/w/api.php?' + urllib.parse.urlencode({'action': 'wbsearchentities', 'search': term, 'language': 'en', 'format': 'json', 'limit': 4}))
-    for hit in result.get('search', []):
-        description = hit.get('description', '')
-        if not re.search(r'company|corporation|airline|bank|agency|department|organization|organisation|service|retailer|manufacturer|conglomerate|business|platform|social network|payment|subsidiary|telecommunication', description, re.I): continue
-        entity = wikidata(hit['id'])
-        name = entity.get('labels', {}).get('en', {}).get('value', hit['label'])
-        names = [name] + [a['value'] for a in entity.get('aliases', {}).get('en', [])]
-        # A fuzzy search hit alone must never establish identity.
-        if not any(term.lower() == a.lower() or clean_name(term).lower() == clean_name(a).lower() for a in names): continue
-        websites = [v for v in values(entity, 'P856') if isinstance(v, str) and v.startswith('https://')]
-        if not websites: continue
-        c = {'name': name, 'wikidata': hit['id'], 'official_url': websites[0], 'domain': urllib.parse.urlparse(websites[0]).hostname, 'entity_source': ENTITY + hit['id']}
-        headquarters = [v for v in values(entity, 'P159') if isinstance(v, dict) and v.get('id')]
-        if headquarters:
-            hq = wikidata(headquarters[0]['id'])
-            coords = values(hq, 'P625')
-            if coords and isinstance(coords[0], dict) and coords[0].get('globe', '').endswith('Q2'):
-                c['coordinates'] = [coords[0]['latitude'], coords[0]['longitude']]
-                c['city'] = hq.get('labels', {}).get('en', {}).get('value', 'Headquarters')
-                c['hq_source'] = ENTITY + hit['id'] + '#P159'
-        c['metadata_checked_at'] = datetime.now(timezone.utc).isoformat()
-        return c
-    return None
 
 
 def enrich_one(c):
@@ -150,43 +127,139 @@ def enrich_one(c):
     return False
 
 
+POLICY = json.loads((BASE / 'entity-policy.json').read_text())
+POLICY_VERSION = POLICY['version']
+BLOCKED_TERMS = set(POLICY['blocked_terms'])
+CONTEXTUAL_TERMS = set(POLICY['contextual_terms'])
+BUNDLED = json.loads((BASE / 'companies.json').read_text())
+
+
+def normalized_name(value):
+    return ' '.join(str(value or '').replace('’', "'").split()).lower()
+
+
+def usable_alias(value):
+    return len(value) >= 3 and normalized_name(value) not in BLOCKED_TERMS
+
+
+def official_website(value):
+    try:
+        url = urllib.parse.urlparse(value)
+        if url.scheme != 'https' or not url.hostname: return None
+        if any(url.hostname == h or url.hostname.endswith('.' + h) for h in POLICY['archive_hosts']): return None
+        return value
+    except (ValueError, TypeError): return None
+
+
+def affected_mention(title, alias):
+    name = r'(?<![a-z0-9])' + re.escape(alias) + r"(?:['’]s)?(?![a-z0-9])"
+    gap = r'(?:[\s,:–—-]+(?:global|widespread|system|systems|service|services|server|servers|network|networks|app|apps|website|platform|payment|payments|phone|cloud|banking|flight|flights|email|login|major|brief|reported|technical|computer|software|communications)){0,4}[\s,:–—-]+'
+    event = r'(?:outages?|disruptions?|downtime|offline|goes down|went down|technical (?:issues?|problems?))'
+    patterns = [name + gap + event, name + r'[\s,:–—-]+(?:reports?|suffers?|experiences?|faces?|sees|restores?|resolves?|hit by|affected by|customers report|users report)\b.{0,70}\b' + event, r'\b' + event + r'[\s,:–—-]+(?:at|hits?|affects?|disrupts?|for|on)\s+' + name]
+    return any(re.search(p, title, re.I) for p in patterns)
+
+
+def make_matcher(companies):
+    compiled = [(c['id'], a, re.compile(r'(?<![a-z0-9])' + re.escape(a) + r'(?![a-z0-9])', re.I)) for c in companies for a in c['aliases'] if usable_alias(a)]
+    def identify_matches(title, kind='news'):
+        found = set()
+        for ident, alias, pattern in compiled:
+            if not pattern.search(title): continue
+            if kind != 'official' and normalized_name(alias) in CONTEXTUAL_TERMS:
+                styled = alias[0].upper() + alias[1:]
+                if not re.search(r'(?<![a-z0-9])(?:' + re.escape(styled) + '|' + re.escape(alias.upper()) + r')(?![a-z0-9])', title): continue
+                if not affected_mention(title, alias): continue
+            found.add(ident)
+        return sorted(found)
+    return identify_matches
+
+
+def sanitize_directory(directory):
+    audited = {c['id']: c for c in BUNDLED if c['id'] in POLICY['audited_legacy_ids']}
+    for ident, original in list(directory.items()):
+        c = original
+        if c.get('origin') == 'Automatically discovered' and c.get('identity_policy') != POLICY_VERSION:
+            if ident not in audited:
+                del directory[ident]
+                continue
+            c = {**c, **audited[ident]}
+            directory[ident] = c
+        if c.get('origin') == 'Automatically discovered' and (not c.get('identity_verified') or not official_website(c.get('official_url')) or not usable_alias(c.get('discovery_evidence', {}).get('matched_name', ''))):
+            del directory[ident]
+
+
+@__import__('functools').lru_cache(maxsize=1024)
+def organization_type(qid, path=()):
+    if qid in POLICY['organization_roots']: return True
+    if qid in path or len(path) >= 5: return False
+    try:
+        return any(organization_type(parent['id'], path + (qid,)) for parent in values(wikidata(qid), 'P279')[:3] if isinstance(parent, dict) and parent.get('id'))
+    except Exception: return False
+
+
+def current_organization(entity):
+    year = datetime.now(timezone.utc).year
+    if any(isinstance(v, dict) and v.get('time') and int(v['time'][1:5]) <= year for v in values(entity, 'P576')): return False
+    return any(organization_type(v['id']) for v in values(entity, 'P31')[:5] if isinstance(v, dict) and v.get('id'))
+
+
+def resolve(term):
+    if not usable_alias(term): return None
+    result = get('https://www.wikidata.org/w/api.php?' + urllib.parse.urlencode({'action': 'wbsearchentities', 'search': term, 'language': 'en', 'format': 'json', 'limit': 3}))
+    for hit in result.get('search', []):
+        entity = wikidata(hit['id'])
+        name = entity.get('labels', {}).get('en', {}).get('value', hit['label'])
+        names = [name] + [a['value'] for a in entity.get('aliases', {}).get('en', [])]
+        if not any(usable_alias(a) and (normalized_name(term) == normalized_name(a) or normalized_name(clean_name(term)) == normalized_name(clean_name(a))) for a in names): continue
+        if not current_organization(entity): continue
+        websites = [u for u in values(entity, 'P856') if isinstance(u, str) and official_website(u)]
+        if not websites: continue
+        c = {'name': name, 'wikidata': hit['id'], 'official_url': websites[0], 'domain': urllib.parse.urlparse(websites[0]).hostname, 'entity_source': ENTITY + hit['id'], 'identity_verified': True, 'identity_policy': POLICY_VERSION, 'identity_verified_at': datetime.now(timezone.utc).isoformat(), 'entity_types': [v['id'] for v in values(entity, 'P31') if isinstance(v, dict) and v.get('id')]}
+        headquarters = [v for v in values(entity, 'P159') if isinstance(v, dict) and v.get('id')]
+        if headquarters:
+            hq = wikidata(headquarters[0]['id'])
+            coords = values(hq, 'P625')
+            if coords and isinstance(coords[0], dict) and coords[0].get('globe', '').endswith('Q2'):
+                c.update(coordinates=[coords[0]['latitude'], coords[0]['longitude']], city=hq.get('labels', {}).get('en', {}).get('value', 'Headquarters'), hq_source=ENTITY + hit['id'] + '#P159')
+        c['metadata_checked_at'] = datetime.now(timezone.utc).isoformat()
+        return c
+    return None
+
+
 def candidates(title):
-    # Only candidates; entity validation and exact name/alias matching happen next.
-    title = re.sub(r'\b(?:Major|Massive|Global|Breaking|Latest|Widespread|Update|US|Today)\b', '', title)
-    parts = re.findall(r'\b(?:[A-Z][A-Za-z0-9&.\'-]+)(?:\s+(?:[A-Z][A-Za-z0-9&.\'-]+|of|the|&)){0,3}', title)
-    for p in parts:
-        p = re.split(r'\s+(?:Outage|Disruption|Down|Faces|Reports|Users|Services|Hit|Experiences)\b', p)[0].strip()
-        if len(p) >= 4 and p.lower() not in ('internet', 'outage', 'service', 'power', 'thousands', 'customers', 'technical', 'united states'):
-            yield p
+    proper = r"\b[A-Z][A-Za-z0-9&.'’-]+(?:\s+(?:[A-Z][A-Za-z0-9&.'’-]+|of|the|and|&|plc)){0,5}"
+    for match_ in re.finditer(proper, title):
+        term = re.split(r'\s+(?:Outages?|Disruptions?|Down|Faces|Reports|Users|Services|Hit|Experiences|Suffers|Customers)\b', match_.group(), flags=re.I)[0].strip()
+        if not usable_alias(term) or normalized_name(term) in CONTEXTUAL_TERMS: continue
+        if normalized_name(term.split()[0]) in POLICY['non_name_prefixes']: continue
+        if affected_mention(title, term): yield term
 
 
 def discover(directory, records, limit=12):
-    added, terms = [], []
+    evidence = {}
+    match_ = make_matcher(directory.values())
     for record in records:
         if record['kind'] != 'news': continue
         title = record.get('full_headline', record['headline'])
-        # A title can mention both an already known and a new organization.
         for term in candidates(title):
-            if any(any(match(term, a) for a in c['aliases']) for c in directory.values()): continue
-            if term not in terms: terms.append(term)
-            if len(terms) >= limit: break
-        if len(terms) >= limit: break
+            if len(evidence) < limit and not match_(term) and term not in evidence:
+                evidence[term] = {'headline': title, 'url': record.get('url'), 'matched_name': term, 'rule': 'affected-organization-name'}
+        if len(evidence) == limit: break
     def attempt(term):
         try: return resolve(term)
         except Exception: return None
     with concurrent.futures.ThreadPoolExecutor(max_workers=3) as pool:
-        results = list(pool.map(attempt, terms))
-    for term, profile in zip(terms, results):
-        if not profile: continue
-        qid = profile['wikidata']
-        existing = next((c for c in directory.values() if c.get('wikidata') == qid or c['name'].lower() == profile['name'].lower() or term.lower() in [a.lower() for a in c['aliases']]), None)
+        results = list(pool.map(attempt, evidence))
+    added = []
+    for term, profile in zip(evidence, results):
+        if not profile or not profile.get('identity_verified'): continue
+        existing = next((c for c in directory.values() if c.get('wikidata') == profile['wikidata'] or normalized_name(c['name']) == normalized_name(profile['name'])), None)
         if existing:
-            if term.lower() not in [a.lower() for a in existing['aliases']]: existing['aliases'].append(term)
             for key, value in profile.items():
                 if not existing.get(key): existing[key] = value
             continue
-        ident = 'discovered-' + qid.lower()
-        directory[ident] = {'id': ident, 'category': 'Discovered in reporting', 'aliases': sorted(set([term, profile['name']])), 'origin': 'Automatically discovered', 'discovered_at': datetime.now(timezone.utc).isoformat(), **profile}
+        ident = 'discovered-' + profile['wikidata'].lower()
+        directory[ident] = {'id': ident, 'category': 'Discovered in reporting', 'aliases': sorted(set(a for a in [term, profile['name']] if usable_alias(a))), 'origin': 'Automatically discovered', 'discovered_at': datetime.now(timezone.utc).isoformat(), 'discovery_evidence': evidence[term], **profile}
         added.append(ident)
     return added
 
